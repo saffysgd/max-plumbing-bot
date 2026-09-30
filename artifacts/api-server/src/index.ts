@@ -26,7 +26,7 @@ async function startServer(): Promise<void> {
   await ensureDatabaseSchema();
   logger.info("PostgreSQL schema is ready");
 
-  const server = app.listen(port, () => {
+  const server = app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "Server listening");
 
     void registerProductionMaxWebhook();
