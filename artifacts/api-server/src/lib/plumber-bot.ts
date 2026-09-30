@@ -40,6 +40,7 @@ interface SessionState {
   servicePage?: ServicePage;
   attachments?: unknown[];
   emergencyPhotoHint?: boolean;
+  adminNotificationSent?: boolean;
 }
 
 interface MaxUser {
@@ -454,6 +455,64 @@ function emergencyStatus(urgency: Urgency | undefined, description: string): str
   return urgency === "today" && emergencyMention ? "аварийная" : "новая";
 }
 
+type PlumberApplicationRow = typeof plumberApplicationsTable.$inferSelect;
+
+function maxAdminPeer(): MaxPeer {
+  const userId = process.env.MAX_ADMIN_USER_ID?.trim();
+  if (!userId || !/^\d+$/.test(userId)) {
+    throw new Error("MAX_ADMIN_USER_ID is missing or invalid.");
+  }
+  return { userId };
+}
+
+function formatAdminApplication(application: PlumberApplicationRow): string {
+  const requestNumber = String(application.id).padStart(4, "0");
+  const createdAt = application.createdAt.toLocaleString("ru-RU", {
+    timeZone: "Asia/Krasnoyarsk",
+  });
+  const urgency =
+    application.urgency === "today" ? "Срочно (сегодня)" : "Планово";
+  const attachmentCount = application.attachments.length;
+
+  return [
+    `Новая заявка #${requestNumber}`,
+    `Создана: ${createdAt}`,
+    `Статус: ${application.status}`,
+    `Срочность: ${urgency}`,
+    `Клиент: ${application.customerName || "не указано"}`,
+    `Телефон: ${application.phone}`,
+    `Услуга: ${application.service}`,
+    `Материал труб: ${application.pipeMaterial}`,
+    `Тип соединения: ${application.connectionType}`,
+    `Опрессовка: ${application.pressureTest ? "да" : "нет"}`,
+    "",
+    `Описание: ${application.description}`,
+    ...(attachmentCount
+      ? ["", `Вложения сохранены в заявке: ${attachmentCount}`]
+      : []),
+  ].join("\n");
+}
+
+async function getApplicationById(
+  applicationId: number,
+): Promise<PlumberApplicationRow | undefined> {
+  const [application] = await db
+    .select()
+    .from(plumberApplicationsTable)
+    .where(eq(plumberApplicationsTable.id, applicationId))
+    .limit(1);
+  return application;
+}
+
+async function notifyMaxAdmin(
+  application: PlumberApplicationRow,
+): Promise<void> {
+  await sendMaxMessage(
+    maxAdminPeer(),
+    formatAdminApplication(application),
+  );
+}
+
 async function finishApplication(
   conversation: Conversation,
   state: SessionState,
@@ -476,6 +535,7 @@ async function finishApplication(
     return;
   }
 
+  const adminPeer = maxAdminPeer();
   const status = emergencyStatus(state.urgency, state.description);
   const application = await db.transaction(async (transaction) => {
     const [created] = await transaction
@@ -494,7 +554,7 @@ async function finishApplication(
         status,
         attachments: state.attachments ?? [],
       })
-      .returning({ id: plumberApplicationsTable.id });
+      .returning();
 
     await transaction
       .update(botSessionsTable)
@@ -505,6 +565,7 @@ async function finishApplication(
           phone,
           applicationId: created.id,
           status,
+          adminNotificationSent: false,
         },
         updatedAt: new Date(),
       })
@@ -513,6 +574,14 @@ async function finishApplication(
     return created;
   });
 
+  await sendMaxMessage(adminPeer, formatAdminApplication(application));
+  await saveSession(conversation, "submitted", {
+    ...state,
+    phone,
+    applicationId: application.id,
+    status,
+    adminNotificationSent: true,
+  });
   await sendApplicationConfirmation(conversation, application.id);
   await deleteSession(conversation.peerId);
 }
@@ -610,6 +679,19 @@ async function continueApplication(
     }
     case "submitted":
       if (state.applicationId) {
+        if (!state.adminNotificationSent) {
+          const application = await getApplicationById(state.applicationId);
+          if (!application) {
+            throw new Error(
+              `Application ${state.applicationId} was not found for admin notification.`,
+            );
+          }
+          await notifyMaxAdmin(application);
+          await saveSession(conversation, "submitted", {
+            ...state,
+            adminNotificationSent: true,
+          });
+        }
         await sendApplicationConfirmation(
           conversation,
           state.applicationId,

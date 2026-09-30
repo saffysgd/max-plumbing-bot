@@ -22,6 +22,7 @@ function secretsMatch(expected: string, received: string | undefined): boolean {
 router.get("/max/status", (_req, res) => {
   res.json({
     botTokenConfigured: Boolean(process.env.MAX_BOT_TOKEN),
+    adminRecipientConfigured: Boolean(process.env.MAX_ADMIN_USER_ID?.trim()),
     webhookReady:
       process.env.NODE_ENV === "production" &&
       Boolean(process.env.MAX_BOT_TOKEN) &&
