@@ -153,6 +153,11 @@ const services: ServiceOption[] = [
   { id: "radiator-repair", label: "Ремонт радиатора отопления" },
 ];
 
+const serviceCategoryOptions: Record<ServicePage, ServiceOption> = {
+  water: { id: "water-category", label: "Водоснабжение" },
+  heating: { id: "heating-category", label: "Отопление и радиаторы" },
+};
+
 const priceMessage = [
   "Услуги и цены",
   "",
@@ -308,9 +313,10 @@ async function deleteSession(peerId: string): Promise<void> {
 function serviceButtons(page: ServicePage = "water"): MaxButtonRows {
   const pageServices =
     page === "water" ? services.slice(0, 8) : services.slice(8);
-  const rows: MaxButtonRows = pageServices.map((service) => [
-    callbackButton(service.label, `service:${service.id}`),
-  ]);
+  const rows: MaxButtonRows = [
+    serviceCategoryOptions[page],
+    ...pageServices,
+  ].map((service) => [callbackButton(service.label, `service:${service.id}`)]);
   rows.push([
     callbackButton(
       page === "water" ? "Вперёд →" : "← Назад",
@@ -739,9 +745,12 @@ async function processCallback(
   }
 
   if (payload.startsWith("service:") && session.step === "service") {
-    const service = services.find(
-      (option) => option.id === payload.slice("service:".length),
-    );
+    const serviceId = payload.slice("service:".length);
+    const service =
+      services.find((option) => option.id === serviceId) ??
+      Object.values(serviceCategoryOptions).find(
+        (option) => option.id === serviceId,
+      );
     if (!service || !state.urgency) {
       return;
     }
