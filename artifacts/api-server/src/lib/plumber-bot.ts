@@ -159,7 +159,7 @@ const priceMessage = [
   "Блок 1 — базовые расценки",
   ...services.map((service) => {
     const price = service.id === "radiator-repair" ? "500 ₽" : "1 000 ₽";
-    return `• ${service.label} — ${price}`;
+    return `• ${service.label} — от ${price}`;
   }),
   "",
   "Блок 2 — ключевые услуги",
