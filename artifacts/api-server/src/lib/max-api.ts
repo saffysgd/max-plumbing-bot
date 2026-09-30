@@ -13,6 +13,10 @@ export interface MaxButton {
 
 export type MaxButtonRows = MaxButton[][];
 
+export type MaxMediaAttachment =
+  | { type: "image"; payload: { token: string } | { url: string } }
+  | { type: "video" | "file"; payload: { token: string } };
+
 function getBotToken(): string {
   const token = process.env.MAX_BOT_TOKEN;
   if (!token) {
@@ -99,15 +103,19 @@ export async function sendMaxMessage(
   peer: MaxPeer,
   text: string,
   buttons?: MaxButtonRows,
+  mediaAttachments: MaxMediaAttachment[] = [],
 ): Promise<void> {
+  const attachments: unknown[] = [
+    ...mediaAttachments,
+    ...(buttons?.length ? [keyboardAttachment(buttons)] : []),
+  ];
+
   await maxRequest("/messages", {
     method: "POST",
     query: peerQuery(peer),
     body: {
       text,
-      ...(buttons?.length
-        ? { attachments: [keyboardAttachment(buttons)] }
-        : {}),
+      ...(attachments.length ? { attachments } : {}),
     },
   });
 }

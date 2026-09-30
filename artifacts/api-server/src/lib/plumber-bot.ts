@@ -12,6 +12,7 @@ import {
   sendMaxMessage,
   type MaxButton,
   type MaxButtonRows,
+  type MaxMediaAttachment,
   type MaxPeer,
 } from "./max-api";
 
@@ -465,7 +466,10 @@ function maxAdminPeer(): MaxPeer {
   return { userId };
 }
 
-function formatAdminApplication(application: PlumberApplicationRow): string {
+function formatAdminApplication(
+  application: PlumberApplicationRow,
+  forwardedAttachmentCount: number,
+): string {
   const requestNumber = String(application.id).padStart(4, "0");
   const createdAt = application.createdAt.toLocaleString("ru-RU", {
     timeZone: "Asia/Krasnoyarsk",
@@ -488,9 +492,44 @@ function formatAdminApplication(application: PlumberApplicationRow): string {
     "",
     `Описание: ${application.description}`,
     ...(attachmentCount
-      ? ["", `Вложения сохранены в заявке: ${attachmentCount}`]
+      ? [
+          "",
+          `Вложения прикреплены: ${forwardedAttachmentCount} из ${attachmentCount}`,
+        ]
       : []),
   ].join("\n");
+}
+
+function toMaxMediaAttachments(
+  attachments: unknown[],
+): MaxMediaAttachment[] {
+  const result: MaxMediaAttachment[] = [];
+
+  for (const attachment of attachments) {
+    const record = readRecord(attachment);
+    const payload = readRecord(record?.payload);
+    const type = record?.type;
+    const token = payload?.token;
+
+    if (type === "image") {
+      if (typeof token === "string" && token.length > 0) {
+        result.push({ type: "image", payload: { token } });
+      } else if (
+        typeof payload?.url === "string" &&
+        payload.url.length > 0
+      ) {
+        result.push({ type: "image", payload: { url: payload.url } });
+      }
+    } else if (
+      (type === "video" || type === "file") &&
+      typeof token === "string" &&
+      token.length > 0
+    ) {
+      result.push({ type, payload: { token } });
+    }
+  }
+
+  return result;
 }
 
 async function getApplicationById(
@@ -506,10 +545,14 @@ async function getApplicationById(
 
 async function notifyMaxAdmin(
   application: PlumberApplicationRow,
+  peer: MaxPeer = maxAdminPeer(),
 ): Promise<void> {
+  const attachments = toMaxMediaAttachments(application.attachments);
   await sendMaxMessage(
-    maxAdminPeer(),
-    formatAdminApplication(application),
+    peer,
+    formatAdminApplication(application, attachments.length),
+    undefined,
+    attachments,
   );
 }
 
@@ -574,7 +617,7 @@ async function finishApplication(
     return created;
   });
 
-  await sendMaxMessage(adminPeer, formatAdminApplication(application));
+  await notifyMaxAdmin(application, adminPeer);
   await saveSession(conversation, "submitted", {
     ...state,
     phone,
