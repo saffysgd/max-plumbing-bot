@@ -8,6 +8,7 @@ import {
 } from "@workspace/db";
 import {
   acknowledgeMaxCallback,
+  editMaxMessage,
   sendMaxMessage,
   type MaxButton,
   type MaxButtonRows,
@@ -23,6 +24,7 @@ type BotStep =
   | "phone"
   | "submitted";
 type Urgency = "today" | "planned";
+type ServicePage = "water" | "heating";
 
 interface SessionState {
   [key: string]: unknown;
@@ -35,6 +37,7 @@ interface SessionState {
   phone?: string;
   applicationId?: number;
   status?: string;
+  servicePage?: ServicePage;
   attachments?: unknown[];
   emergencyPhotoHint?: boolean;
 }
@@ -48,12 +51,14 @@ interface MaxUser {
 }
 
 interface MaxMessage {
+  message_id?: string;
   sender?: MaxUser;
   recipient?: {
     chat_id?: number | string;
     user_id?: number | string;
   };
   body?: {
+    mid?: string;
     text?: string;
     attachments?: unknown[];
   };
@@ -80,6 +85,7 @@ interface Conversation {
   peerId: string;
   userId: string;
   userName?: string;
+  messageId?: string;
 }
 
 interface ServiceOption {
@@ -91,13 +97,26 @@ function callbackButton(text: string, payload: string): MaxButton {
   return { type: "callback", text, payload };
 }
 
+async function sendOrEditMessage(
+  conversation: Conversation,
+  text: string,
+  buttons?: MaxButtonRows,
+): Promise<void> {
+  if (conversation.messageId) {
+    await editMaxMessage(conversation.messageId, text, buttons);
+    return;
+  }
+
+  await sendMaxMessage(conversation.peer, text, buttons);
+}
+
 function materialButtons(): MaxButtonRows {
   return [
-    [callbackButton("Стальные трубы — электродуговая сварка", "material:steel")],
+    [callbackButton("Сталь — электродуговая сварка", "material:steel")],
     [callbackButton("Полипропилен — пайка", "material:polypropylene")],
     [
       callbackButton(
-        "Металлопластик / другие — сборка обвязки",
+        "Металлопластик — фитинги",
         "material:metal-plastic",
       ),
     ],
@@ -164,24 +183,28 @@ const howWeWorkMessage = [
 const faqItems = [
   {
     id: "materials",
+    buttonLabel: "Материалы и методы",
     question: "Какие материалы и методы используете?",
     answer:
       "Стальные трубы (сварка), полипропилен (пайка), металлопластик (обвязка). Подбираем под требования УК и бюджет.",
   },
   {
     id: "pressure",
+    buttonLabel: "Опрессовка и проверка",
     question: "Делаете ли опрессовку и проверку на течи?",
     answer:
       "Да, подготовка и опрессовка систем, поиск и устранение течей входят в комплекс работ.",
   },
   {
     id: "emergency",
+    buttonLabel: "Аварийный выезд",
     question: "Работаете ли в аварийных случаях?",
     answer:
       "Да, возможен срочный выезд при прорыве, течи и других ЧП.",
   },
   {
     id: "warranty",
+    buttonLabel: "Гарантия на работы",
     question: "Даёте ли гарантию?",
     answer: "Да, предоставляем гарантию на выполненные работы.",
   },
@@ -204,9 +227,9 @@ function mainMenuButtons(): MaxButtonRows {
   ];
 }
 
-async function sendMainMenu(peer: MaxPeer): Promise<void> {
-  await sendMaxMessage(
-    peer,
+async function sendMainMenu(conversation: Conversation): Promise<void> {
+  await sendOrEditMessage(
+    conversation,
     "Здравствуйте! Я помогу выбрать сантехническую услугу и оставить заявку. Выберите раздел:",
     mainMenuButtons(),
   );
@@ -214,13 +237,19 @@ async function sendMainMenu(peer: MaxPeer): Promise<void> {
 
 function conversationFromUpdate(update: MaxUpdate): Conversation | undefined {
   const message = update.message ?? update.callback?.message;
-  const sender = message?.sender ?? update.callback?.user ?? update.user;
+  const sender =
+    update.update_type === "message_callback"
+      ? update.callback?.user ?? message?.sender ?? update.user
+      : message?.sender ?? update.callback?.user ?? update.user;
   const userIdValue = sender?.user_id ?? message?.recipient?.user_id;
   const chatIdValue = message?.recipient?.chat_id ?? update.chat_id;
   const userId = userIdValue === undefined ? undefined : String(userIdValue);
   const chatId = chatIdValue === undefined ? undefined : String(chatIdValue);
   const peer: MaxPeer = chatId ? { chatId } : userId ? { userId } : {};
   const peerId = peer.chatId ?? peer.userId;
+  const callbackMessage =
+    update.update_type === "message_callback" ? message : undefined;
+  const messageId = callbackMessage?.body?.mid ?? callbackMessage?.message_id;
 
   if (!peerId || !userId) {
     return undefined;
@@ -232,6 +261,7 @@ function conversationFromUpdate(update: MaxUpdate): Conversation | undefined {
     peerId,
     userId,
     ...(userName ? { userName } : {}),
+    ...(messageId ? { messageId } : {}),
   };
 }
 
@@ -275,15 +305,18 @@ async function deleteSession(peerId: string): Promise<void> {
     .where(eq(botSessionsTable.peerId, peerId));
 }
 
-function serviceButtons(): MaxButtonRows {
-  const rows: MaxButtonRows = [];
-  for (let i = 0; i < services.length; i += 2) {
-    rows.push(
-      services.slice(i, i + 2).map((service) =>
-        callbackButton(service.label, `service:${service.id}`),
-      ),
-    );
-  }
+function serviceButtons(page: ServicePage = "water"): MaxButtonRows {
+  const pageServices =
+    page === "water" ? services.slice(0, 8) : services.slice(8);
+  const rows: MaxButtonRows = pageServices.map((service) => [
+    callbackButton(service.label, `service:${service.id}`),
+  ]);
+  rows.push([
+    callbackButton(
+      page === "water" ? "Отопление и радиаторы →" : "← Водоснабжение",
+      `service-page:${page === "water" ? "heating" : "water"}`,
+    ),
+  ]);
   rows.push([callbackButton("Отмена", "apply:cancel")]);
   return rows;
 }
@@ -298,8 +331,8 @@ async function startApplication(
       emergencyPhotoHint: true,
       attachments: [],
     });
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Срочность установлена: «Срочно (сегодня)».\nПриложите фото места аварии в чат, затем выберите услугу:",
       serviceButtons(),
     );
@@ -307,7 +340,7 @@ async function startApplication(
   }
 
   await saveSession(conversation, "urgency", { attachments: [] });
-  await sendMaxMessage(conversation.peer, "Когда требуется выезд?", [
+  await sendOrEditMessage(conversation, "Когда требуется выезд?", [
     [
       callbackButton("Срочно (сегодня)", "urgency:today"),
       callbackButton("Планово", "urgency:planned"),
@@ -327,8 +360,8 @@ async function askForMaterial(
     urgency,
     service,
   });
-  await sendMaxMessage(
-    conversation.peer,
+  await sendOrEditMessage(
+    conversation,
     "Выберите материал труб и тип работ:",
     materialButtons(),
   );
@@ -339,8 +372,8 @@ async function askForDescription(
   state: SessionState,
 ): Promise<void> {
   await saveSession(conversation, "description", state);
-  await sendMaxMessage(
-    conversation.peer,
+  await sendOrEditMessage(
+    conversation,
     `Опишите объём работ.\n${descriptionHint}`,
     [[callbackButton("Отмена", "apply:cancel")]],
   );
@@ -429,8 +462,8 @@ async function finishApplication(
     !state.description
   ) {
     await deleteSession(conversation.peerId);
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Не удалось завершить заявку из-за неполных данных. Начните заново через «Оставить заявку».",
       mainMenuButtons(),
     );
@@ -483,8 +516,8 @@ async function sendApplicationConfirmation(
   applicationId: number,
 ): Promise<void> {
   const requestNumber = String(applicationId).padStart(4, "0");
-  await sendMaxMessage(
-    conversation.peer,
+  await sendOrEditMessage(
+    conversation,
     `Ваша заявка принята. Мы свяжемся с вами в течение 1 часа. Если это аварийная ситуация (прорыв, течь) — мастер приедет в течение 2 часов. Номер заявки: #${requestNumber}`,
     mainMenuButtons(),
   );
@@ -505,35 +538,38 @@ async function continueApplication(
 
   switch (step) {
     case "urgency":
-      await sendMaxMessage(conversation.peer, "Выберите срочность кнопкой выше.");
+      await sendOrEditMessage(
+        conversation,
+        "Выберите срочность кнопкой выше.",
+      );
       return;
     case "service":
-      await sendMaxMessage(
-        conversation.peer,
+      await sendOrEditMessage(
+        conversation,
         media.length
           ? "Фото получено. Теперь выберите услугу:"
           : "Выберите услугу кнопкой:",
-        serviceButtons(),
+        serviceButtons(state.servicePage),
       );
       return;
     case "material":
-      await sendMaxMessage(
-        conversation.peer,
+      await sendOrEditMessage(
+        conversation,
         "Выберите материал труб и тип работ кнопкой.",
         materialButtons(),
       );
       return;
     case "pressure":
-      await sendMaxMessage(
-        conversation.peer,
+      await sendOrEditMessage(
+        conversation,
         "Нужна ли подготовка и опрессовка с проверкой на течи?",
         pressureButtons(),
       );
       return;
     case "description":
       if (!messageText.trim()) {
-        await sendMaxMessage(
-          conversation.peer,
+        await sendOrEditMessage(
+          conversation,
           media.length
             ? "Фото получено. Добавьте текстовое описание работ."
             : `Добавьте текстовое описание.\n${descriptionHint}`,
@@ -542,8 +578,8 @@ async function continueApplication(
       }
       state.description = messageText.trim().slice(0, 3000);
       await saveSession(conversation, "phone", state);
-      await sendMaxMessage(
-        conversation.peer,
+      await sendOrEditMessage(
+        conversation,
         "Укажите номер телефона для связи или отправьте контакт кнопкой:",
         [[
           { type: "request_contact", text: "Поделиться номером телефона" },
@@ -554,8 +590,8 @@ async function continueApplication(
       const phone =
         findPhone(attachments) ?? normalizePhone(messageText);
       if (!phone) {
-        await sendMaxMessage(
-          conversation.peer,
+        await sendOrEditMessage(
+          conversation,
           "Не получилось распознать номер. Отправьте номер телефона текстом или поделитесь контактом.",
           [[
             { type: "request_contact", text: "Поделиться номером телефона" },
@@ -581,7 +617,7 @@ async function continueApplication(
 function buttonsForFaq(): MaxButtonRows {
   return [
     ...faqItems.map((item) => [
-      callbackButton(item.question, `faq:${item.id}`),
+      callbackButton(item.buttonLabel, `faq:${item.id}`),
     ]),
     [callbackButton("В главное меню", "menu:home")],
   ];
@@ -592,28 +628,28 @@ async function processCallback(
   payload: string,
 ): Promise<void> {
   if (payload === "menu:home") {
-    await sendMainMenu(conversation.peer);
+    await sendMainMenu(conversation);
     return;
   }
   if (payload === "menu:prices") {
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       priceMessage,
       [[callbackButton("В главное меню", "menu:home")]],
     );
     return;
   }
   if (payload === "menu:how") {
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       howWeWorkMessage,
       [[callbackButton("В главное меню", "menu:home")]],
     );
     return;
   }
   if (payload === "menu:faq") {
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Выберите вопрос:",
       buttonsForFaq(),
     );
@@ -629,8 +665,8 @@ async function processCallback(
   }
   if (payload === "apply:cancel") {
     await deleteSession(conversation.peerId);
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Заявка отменена.",
       mainMenuButtons(),
     );
@@ -639,8 +675,8 @@ async function processCallback(
   if (payload.startsWith("faq:")) {
     const faq = faqItems.find((item) => item.id === payload.slice(4));
     if (faq) {
-      await sendMaxMessage(
-        conversation.peer,
+      await sendOrEditMessage(
+        conversation,
         `${faq.question}\n\n${faq.answer}`,
         [[callbackButton("К другим вопросам", "menu:faq")]],
       );
@@ -650,14 +686,35 @@ async function processCallback(
 
   const session = await getSession(conversation.peerId);
   if (!session) {
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Начните оформление через «Оставить заявку».",
       mainMenuButtons(),
     );
     return;
   }
   const state = session.state as SessionState;
+
+  if (payload.startsWith("service-page:") && session.step === "service") {
+    const page = payload.slice("service-page:".length);
+    if (page !== "water" && page !== "heating") {
+      return;
+    }
+    await saveSession(conversation, "service", {
+      ...state,
+      servicePage: page,
+    });
+    const pageTitle =
+      page === "water"
+        ? "Водоснабжение — выберите услугу:"
+        : "Отопление и радиаторы — выберите услугу:";
+    await sendOrEditMessage(
+      conversation,
+      pageTitle,
+      serviceButtons(page),
+    );
+    return;
+  }
 
   if (payload.startsWith("urgency:") && session.step === "urgency") {
     const urgency = payload.slice(8);
@@ -673,8 +730,8 @@ async function processCallback(
       ...state,
       urgency,
     });
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       `${message}\nКакую работу нужно выполнить?`,
       buttons,
     );
@@ -722,8 +779,8 @@ async function processCallback(
       ...selected,
     };
     await saveSession(conversation, "pressure", nextState);
-    await sendMaxMessage(
-      conversation.peer,
+    await sendOrEditMessage(
+      conversation,
       "Нужна ли подготовка и опрессовка с проверкой на течи?",
       pressureButtons(),
     );
@@ -794,7 +851,7 @@ export async function handleMaxUpdate(
   }
 
   if (update.update_type === "bot_started") {
-    await sendMainMenu(conversation.peer);
+    await sendMainMenu(conversation);
     return;
   }
 
@@ -819,7 +876,7 @@ export async function handleMaxUpdate(
 
   const session = await getSession(conversation.peerId);
   if (!session) {
-    await sendMainMenu(conversation.peer);
+    await sendMainMenu(conversation);
     return;
   }
 

@@ -24,7 +24,7 @@ function getBotToken(): string {
 async function maxRequest(
   path: string,
   options: {
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PUT";
     query?: Record<string, string>;
     body?: unknown;
   },
@@ -108,6 +108,24 @@ export async function sendMaxMessage(
       ...(buttons?.length
         ? { attachments: [keyboardAttachment(buttons)] }
         : {}),
+    },
+  });
+}
+
+export async function editMaxMessage(
+  messageId: string,
+  text: string,
+  buttons?: MaxButtonRows,
+): Promise<void> {
+  await maxRequest("/messages", {
+    method: "PUT",
+    query: { message_id: messageId },
+    body: {
+      text,
+      attachments: buttons?.length
+        ? [keyboardAttachment(buttons)]
+        : [],
+      notify: false,
     },
   });
 }
