@@ -313,7 +313,7 @@ function serviceButtons(page: ServicePage = "water"): MaxButtonRows {
   ]);
   rows.push([
     callbackButton(
-      page === "water" ? "Отопление и радиаторы →" : "← Водоснабжение",
+      page === "water" ? "Вперёд →" : "← Назад",
       `service-page:${page === "water" ? "heating" : "water"}`,
     ),
   ]);
