@@ -1,4 +1,5 @@
 import app from "./app";
+import { ensureDatabaseSchema, pool } from "@workspace/db";
 import { logger } from "./lib/logger";
 import {
   getMaxWebhookSecret,
@@ -21,15 +22,29 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
+async function startServer(): Promise<void> {
+  await ensureDatabaseSchema();
+  logger.info("PostgreSQL schema is ready");
 
-  logger.info({ port }, "Server listening");
+  const server = app.listen(port, () => {
+    logger.info({ port }, "Server listening");
 
-  void registerProductionMaxWebhook();
+    void registerProductionMaxWebhook();
+  });
+
+  server.on("error", (error) => {
+    logger.error({ err: error }, "Error listening on port");
+    void pool
+      .end()
+      .catch(() => undefined)
+      .finally(() => process.exit(1));
+  });
+}
+
+void startServer().catch(async (error: unknown) => {
+  logger.error({ err: error }, "Could not initialize PostgreSQL schema");
+  await pool.end().catch(() => undefined);
+  process.exit(1);
 });
 
 async function registerProductionMaxWebhook(): Promise<void> {
