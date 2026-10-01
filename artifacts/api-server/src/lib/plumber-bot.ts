@@ -342,7 +342,7 @@ async function startApplication(
     });
     await sendOrEditMessage(
       conversation,
-      "Срочность установлена: «Срочно (сегодня)».\nПриложите фото места аварии в чат, затем выберите услугу:",
+      "Срочность установлена: «Срочно (сегодня)».\nПриложите фото или видео места аварии в чат, затем выберите услугу:",
       serviceButtons(),
     );
     return;
@@ -391,11 +391,11 @@ async function askForDescription(
 const phoneHint =
   "Укажите номер российского телефона: ровно 11 цифр, начиная с +7 или 8. Например: +7 900 123-45-67 или 8 900 123-45-67. Можно поделиться контактом кнопкой.";
 
-async function askForPhoto(
+async function askForPhotoOrVideo(
   conversation: Conversation,
   state: SessionState,
 ): Promise<void> {
-  if ((state.attachments ?? []).some(isPhotoAttachment)) {
+  if ((state.attachments ?? []).some(isPhotoOrVideoAttachment)) {
     await askForPhone(conversation, state);
     return;
   }
@@ -403,7 +403,7 @@ async function askForPhoto(
   await saveSession(conversation, "photo", state);
   await sendOrEditMessage(
     conversation,
-    "Прикрепите хотя бы одно фото объекта. После фото попрошу номер телефона.",
+    "Прикрепите хотя бы одно фото или видео объекта. После этого попрошу номер телефона.",
     [[callbackButton("Отмена", "apply:cancel")]],
   );
 }
@@ -446,6 +446,14 @@ function getMediaAttachments(attachments: unknown[]): unknown[] {
 
 function isPhotoAttachment(attachment: unknown): boolean {
   return readRecord(attachment)?.type === "image";
+}
+
+function isVideoAttachment(attachment: unknown): boolean {
+  return readRecord(attachment)?.type === "video";
+}
+
+function isPhotoOrVideoAttachment(attachment: unknown): boolean {
+  return isPhotoAttachment(attachment) || isVideoAttachment(attachment);
 }
 
 function normalizePhone(value: unknown): string | undefined {
@@ -707,9 +715,13 @@ async function continueApplication(
       await sendOrEditMessage(
         conversation,
         media.length
-          ? media.some(isPhotoAttachment)
-            ? "Фото получено. Теперь выберите услугу:"
-            : "Вложение получено. Теперь выберите услугу:"
+          ? media.some(isPhotoAttachment) && media.some(isVideoAttachment)
+            ? "Фото и видео получены. Теперь выберите услугу:"
+            : media.some(isPhotoAttachment)
+              ? "Фото получено. Теперь выберите услугу:"
+              : media.some(isVideoAttachment)
+                ? "Видео получено. Теперь выберите услугу:"
+                : "Вложение получено. Теперь выберите услугу:"
           : "Выберите услугу кнопкой:",
         serviceButtons(state.servicePage),
       );
@@ -739,15 +751,15 @@ async function continueApplication(
         return;
       }
       state.description = messageText.trim().slice(0, 3000);
-      await askForPhoto(conversation, state);
+      await askForPhotoOrVideo(conversation, state);
       return;
     case "photo":
-      if (!(state.attachments ?? []).some(isPhotoAttachment)) {
+      if (!(state.attachments ?? []).some(isPhotoOrVideoAttachment)) {
         await sendOrEditMessage(
           conversation,
           media.length
-            ? "Это не фото. Прикрепите изображение, чтобы продолжить."
-            : "Чтобы продолжить, прикрепите хотя бы одно фото объекта.",
+            ? "Это вложение не подходит. Отправьте фото или видео объекта, чтобы продолжить."
+            : "Чтобы продолжить, прикрепите хотя бы одно фото или видео объекта.",
           [[callbackButton("Отмена", "apply:cancel")]],
         );
         return;
@@ -761,11 +773,11 @@ async function continueApplication(
     case "phone": {
       const phone =
         findPhone(attachments) ?? normalizePhone(messageText);
-      if (!(state.attachments ?? []).some(isPhotoAttachment)) {
+      if (!(state.attachments ?? []).some(isPhotoOrVideoAttachment)) {
         if (phone) {
           state.phone = phone;
         }
-        await askForPhoto(conversation, state);
+        await askForPhotoOrVideo(conversation, state);
         return;
       }
       if (!phone) {
