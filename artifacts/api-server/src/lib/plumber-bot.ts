@@ -22,6 +22,7 @@ type BotStep =
   | "material"
   | "pressure"
   | "description"
+  | "photo"
   | "phone"
   | "submitted";
 type Urgency = "today" | "planned";
@@ -387,6 +388,42 @@ async function askForDescription(
   );
 }
 
+const phoneHint =
+  "Укажите номер российского телефона: ровно 11 цифр, начиная с +7 или 8. Например: +7 900 123-45-67 или 8 900 123-45-67. Можно поделиться контактом кнопкой.";
+
+async function askForPhoto(
+  conversation: Conversation,
+  state: SessionState,
+): Promise<void> {
+  if ((state.attachments ?? []).some(isPhotoAttachment)) {
+    await askForPhone(conversation, state);
+    return;
+  }
+
+  await saveSession(conversation, "photo", state);
+  await sendOrEditMessage(
+    conversation,
+    "Прикрепите хотя бы одно фото объекта. После фото попрошу номер телефона.",
+    [[callbackButton("Отмена", "apply:cancel")]],
+  );
+}
+
+async function askForPhone(
+  conversation: Conversation,
+  state: SessionState,
+  invalid = false,
+): Promise<void> {
+  await saveSession(conversation, "phone", state);
+  await sendOrEditMessage(
+    conversation,
+    `${invalid ? "Номер не подходит. " : ""}${phoneHint}`,
+    [
+      [{ type: "request_contact", text: "Поделиться номером телефона" }],
+      [callbackButton("Отмена", "apply:cancel")],
+    ],
+  );
+}
+
 function readRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -407,13 +444,18 @@ function getMediaAttachments(attachments: unknown[]): unknown[] {
   });
 }
 
+function isPhotoAttachment(attachment: unknown): boolean {
+  return readRecord(attachment)?.type === "image";
+}
+
 function normalizePhone(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const trimmed = value.trim();
-  const digits = trimmed.replace(/\D/g, "");
-  return digits.length >= 10 && digits.length <= 15 ? trimmed : undefined;
+  const normalized = value.trim().replace(/[()\s-]/g, "");
+  return /^(?:\+7|8)\d{10}$/.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 function findPhone(value: unknown, depth = 0): string | undefined {
@@ -665,7 +707,9 @@ async function continueApplication(
       await sendOrEditMessage(
         conversation,
         media.length
-          ? "Фото получено. Теперь выберите услугу:"
+          ? media.some(isPhotoAttachment)
+            ? "Фото получено. Теперь выберите услугу:"
+            : "Вложение получено. Теперь выберите услугу:"
           : "Выберите услугу кнопкой:",
         serviceButtons(state.servicePage),
       );
@@ -689,32 +733,43 @@ async function continueApplication(
         await sendOrEditMessage(
           conversation,
           media.length
-            ? "Фото получено. Добавьте текстовое описание работ."
+            ? "Вложение получено. Добавьте текстовое описание работ."
             : `Добавьте текстовое описание.\n${descriptionHint}`,
         );
         return;
       }
       state.description = messageText.trim().slice(0, 3000);
-      await saveSession(conversation, "phone", state);
-      await sendOrEditMessage(
-        conversation,
-        "Укажите номер телефона для связи или отправьте контакт кнопкой:",
-        [[
-          { type: "request_contact", text: "Поделиться номером телефона" },
-        ]],
-      );
+      await askForPhoto(conversation, state);
+      return;
+    case "photo":
+      if (!(state.attachments ?? []).some(isPhotoAttachment)) {
+        await sendOrEditMessage(
+          conversation,
+          media.length
+            ? "Это не фото. Прикрепите изображение, чтобы продолжить."
+            : "Чтобы продолжить, прикрепите хотя бы одно фото объекта.",
+          [[callbackButton("Отмена", "apply:cancel")]],
+        );
+        return;
+      }
+      if (state.phone) {
+        await finishApplication(conversation, state, state.phone);
+        return;
+      }
+      await askForPhone(conversation, state);
       return;
     case "phone": {
       const phone =
         findPhone(attachments) ?? normalizePhone(messageText);
+      if (!(state.attachments ?? []).some(isPhotoAttachment)) {
+        if (phone) {
+          state.phone = phone;
+        }
+        await askForPhoto(conversation, state);
+        return;
+      }
       if (!phone) {
-        await sendOrEditMessage(
-          conversation,
-          "Не получилось распознать номер. Отправьте номер телефона текстом или поделитесь контактом.",
-          [[
-            { type: "request_contact", text: "Поделиться номером телефона" },
-          ]],
-        );
+        await askForPhone(conversation, state, true);
         return;
       }
       await finishApplication(conversation, state, phone);
